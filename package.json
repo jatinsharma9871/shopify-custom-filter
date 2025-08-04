@@ -1,0 +1,26 @@
+{
+  "name": "shopify-custom-filter",
+  "version": "1.0.0",
+  "main": "frontend-example.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jatinsharma9871/shopify-custom-filter.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/jatinsharma9871/shopify-custom-filter/issues"
+  },
+  "homepage": "https://github.com/jatinsharma9871/shopify-custom-filter#readme",
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "node-fetch": "^3.3.2"
+  },
+  "description": ""
+}

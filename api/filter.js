@@ -1,4 +1,15 @@
+// Top of your filter.js or server.js
 const fetch = require('node-fetch');
+
+// Example usage
+const response = await fetch('https://your-shopify-url.myshopify.com/admin/api/2024-04/products.json', {
+  method: 'GET',
+  headers: {
+    'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
+    'Content-Type': 'application/json'
+  }
+});
+
 
 module.exports = async (req, res) => {
   const { vendor, type, priceMin, priceMax } = req.query;
