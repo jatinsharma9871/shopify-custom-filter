@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "api/filter.js", "use": "@vercel/node" }
+  ],
+  "routes": [
+    { "src": "/apps/custom-filter", "dest": "api/filter.js" }
+  ]
+}
