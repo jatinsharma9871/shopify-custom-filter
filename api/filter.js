@@ -9,7 +9,7 @@ const response = await fetch('https://the-sverve.myshopify.com/admin/api/2024-04
     'Content-Type': 'application/json'
   }
 });
-
+ 
 
 module.exports = async (req, res) => {
   const { vendor, type, priceMin, priceMax } = req.query;
