@@ -1,49 +1,60 @@
-const express = require('express');
-const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
-require('dotenv').config();
+const fetch = require('node-fetch');
 
-const app = express();
-const port = 3000;
-
-app.get('/api/filter', async (req, res) => {
-  const { vendor, type, priceMin, priceMax } = req.query;
-
+module.exports = async (req, res) => {
   try {
-    const url = `https://${process.env.SHOPIFY_STORE}/admin/api/2024-01/products.json?limit=250`;
+    const { vendor, price_min, price_max } = req.query;
 
-    const response = await fetch(url, {
-      headers: {
-        'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_ACCESS,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      return res.status(response.status).json({ error: errorText });
+    if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+      return res.status(500).json({ error: 'Missing environment variables' });
     }
 
-    const data = await response.json();
+    const query = `
+      {
+        products(first: 50, query: "vendor:${vendor} AND variants.price:>=${price_min} AND variants.price:<=${price_max}") {
+          edges {
+            node {
+              id
+              title
+              vendor
+              productType
+              variants(first: 1) {
+                edges {
+                  node {
+                    price
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
 
-    const filtered = data.products.filter(product => {
-      const matchesVendor = vendor ? product.vendor.toLowerCase().includes(vendor.toLowerCase()) : true;
-      const matchesType = type ? product.product_type.toLowerCase().includes(type.toLowerCase()) : true;
-      const matchesPrice = product.variants.some(variant => {
-        const price = parseFloat(variant.price);
-        return (!priceMin || price >= parseFloat(priceMin)) && (!priceMax || price <= parseFloat(priceMax));
-      });
-
-      return matchesVendor && matchesType && matchesPrice;
+    const response = await fetch(`https://${process.env.SHOPIFY_STORE_URL}/admin/api/2024-04/graphql.json`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
+      },
+      body: JSON.stringify({ query })
     });
 
-    res.status(200).json({ products: filtered });
+    const json = await response.json();
 
+    if (json.errors) {
+      return res.status(500).json({ error: 'Shopify GraphQL error', detail: json.errors });
+    }
+
+    const products = json.data.products.edges.map(edge => ({
+      id: edge.node.id,
+      title: edge.node.title,
+      vendor: edge.node.vendor,
+      productType: edge.node.productType,
+      price: edge.node.variants.edges[0]?.node.price || null
+    }));
+
+    return res.status(200).json({ products });
   } catch (error) {
-    console.error('Error:', error.message);
-    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+    return res.status(500).json({ error: 'Internal Server Error', detail: error.message });
   }
-});
-
-app.listen(port, () => {
-  console.log(`Server listening on http://localhost:${port}`);
-});
+};

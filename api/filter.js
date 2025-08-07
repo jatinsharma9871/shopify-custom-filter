@@ -1,60 +1,44 @@
-// Only needed if using Node < 18 locally or Vercel doesn't support fetch natively
-import fetch from 'node-fetch';
+// api/filter.js
 
-export default async function handler(req, res) {
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+
+module.exports = async (req, res) => {
+  const { vendor, price_min, price_max } = req.query;
+
+  const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
+  const ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_KEY;
+
+  if (!SHOPIFY_STORE || !ACCESS_TOKEN) {
+    return res.status(500).json({ error: 'Missing env vars' });
+  }
+
+  const url = `https://${SHOPIFY_STORE}/admin/api/2024-04/products.json?vendor=${vendor}&fields=id,title,variants`;
+
   try {
-    const { vendor, min_price, max_price, color, product_type } = req.query;
-
-    const shop = process.env.SHOPIFY_SHOP;
-    const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
-
-    if (!shop || !accessToken) {
-      return res.status(500).json({ error: 'Missing Shopify credentials in environment variables' });
-    }
-
-    const url = `https://${shop}/admin/api/2024-04/products.json?limit=250`;
-
     const response = await fetch(url, {
-      method: 'GET',
       headers: {
-        'X-Shopify-Access-Token': accessToken,
+        'X-Shopify-Access-Token': ACCESS_TOKEN,
         'Content-Type': 'application/json',
       },
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Shopify API Error:', response.status, errorText);
-      return res.status(502).json({ error: 'Failed to fetch products from Shopify' });
+      return res.status(500).json({ error: 'Shopify API error', detail: errorText });
     }
 
     const data = await response.json();
-    let products = data.products || [];
 
-    // Filtering logic
-    products = products.filter((product) => {
-      let match = true;
-
-      if (vendor && product.vendor !== vendor) match = false;
-      if (product_type && product.product_type !== product_type) match = false;
-
-      // Price range filter
-      const prices = product.variants.map((v) => parseFloat(v.price));
-      const min = Math.min(...prices);
-      const max = Math.max(...prices);
-
-      if (min_price && max < parseFloat(min_price)) match = false;
-      if (max_price && min > parseFloat(max_price)) match = false;
-
-      // Tag-based color filter
-      if (color && !product.tags.toLowerCase().includes(color.toLowerCase())) match = false;
-
-      return match;
+    // Filter by price range
+    const filteredProducts = data.products.filter((product) => {
+      return product.variants.some((variant) => {
+        const price = parseFloat(variant.price);
+        return price >= price_min && price <= price_max;
+      });
     });
 
-    res.status(200).json({ products });
+    res.status(200).json({ products: filteredProducts });
   } catch (error) {
-    console.error('API Handler Error:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    res.status(500).json({ error: 'Internal Server Error', detail: error.message });
   }
-}
+};
