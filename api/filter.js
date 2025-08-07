@@ -1,77 +1,56 @@
-// /api/filter.js
-const fetch = require('node-fetch');
+// api/filter.js
+
+const fetch = (...args) =>
+  import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 module.exports = async (req, res) => {
-  const { vendor, minPrice, maxPrice } = req.query;
+  const { vendor, price_min, price_max } = req.query;
 
-  const shop = process.env.SHOPIFY_SHOP;
-  const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
+  const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
+  const ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_KEY;
 
-  const queryParams = [];
-  if (vendor) queryParams.push(`vendor:${vendor}`);
-  // Optionally filter by other fields
-  const query = queryParams.length > 0 ? queryParams.join(' AND ') : '';
+  // Validate env vars
+  if (!SHOPIFY_STORE || !ACCESS_TOKEN) {
+    return res.status(500).json({ error: 'Missing env vars' });
+  }
 
-  const adminApiUrl = `https://${shop}/admin/api/2024-04/graphql.json`;
-  const queryGQL = {
-    query: `
-      {
-        products(first: 250, query: "${query}") {
-          edges {
-            node {
-              id
-              title
-              vendor
-              variants(first: 1) {
-                edges {
-                  node {
-                    price
-                  }
-                }
-              }
-              handle
-              images(first: 1) {
-                edges {
-                  node {
-                    src
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    `,
-  };
+  // Validate query params
+  if (!vendor || !price_min || !price_max) {
+    return res.status(400).json({ error: 'Missing required query parameters' });
+  }
+
+  const url = `https://${SHOPIFY_STORE}/admin/api/2024-04/products.json?vendor=${vendor}&fields=id,title,variants&limit=250`;
 
   try {
-    const response = await fetch(adminApiUrl, {
-      method: 'POST',
+    const response = await fetch(url, {
+      method: 'GET',
       headers: {
-        'X-Shopify-Access-Token': accessToken,
+        'X-Shopify-Access-Token': ACCESS_TOKEN,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(queryGQL),
     });
 
-    const result = await response.json();
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(500).json({ error: 'Shopify API error', detail: errorText });
+    }
 
-    // Apply local price filtering
-    const filtered = result.data.products.edges.filter(({ node }) => {
-      const price = parseFloat(node.variants.edges[0]?.node.price || 0);
-      return price >= minPrice && price <= maxPrice;
-    });
+    const data = await response.json();
 
-    res.status(200).json(filtered.map(({ node }) => ({
-      id: node.id,
-      title: node.title,
-      vendor: node.vendor,
-      price: node.variants.edges[0]?.node.price,
-      image: node.images.edges[0]?.node.src,
-      handle: node.handle,
-    })));
+    // Filter by price range (cast query params to float)
+    const min = parseFloat(price_min);
+    const max = parseFloat(price_max);
+
+    const filteredProducts = data.products.filter((product) =>
+      product.variants.some((variant) => {
+        const price = parseFloat(variant.price);
+        return price >= min && price <= max;
+      })
+    );
+
+    res.status(200).json({ products: filteredProducts });
   } catch (error) {
-    console.error('Error fetching products:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    console.error('Filter API Error:', error);
+    res.status(500).json({ error: 'Internal Server Error', detail: error.message });
   }
 };
