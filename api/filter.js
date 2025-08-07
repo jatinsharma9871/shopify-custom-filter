@@ -1,6 +1,7 @@
 // api/filter.js
 
-const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const fetch = (...args) =>
+  import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 module.exports = async (req, res) => {
   const { vendor, price_min, price_max } = req.query;
@@ -8,14 +9,21 @@ module.exports = async (req, res) => {
   const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
   const ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_KEY;
 
+  // Validate env vars
   if (!SHOPIFY_STORE || !ACCESS_TOKEN) {
     return res.status(500).json({ error: 'Missing env vars' });
   }
 
-  const url = `https://${SHOPIFY_STORE}/admin/api/2024-04/products.json?vendor=${vendor}&fields=id,title,variants`;
+  // Validate query params
+  if (!vendor || !price_min || !price_max) {
+    return res.status(400).json({ error: 'Missing required query parameters' });
+  }
+
+  const url = `https://${SHOPIFY_STORE}/admin/api/2024-04/products.json?vendor=${vendor}&fields=id,title,variants&limit=250`;
 
   try {
     const response = await fetch(url, {
+      method: 'GET',
       headers: {
         'X-Shopify-Access-Token': ACCESS_TOKEN,
         'Content-Type': 'application/json',
@@ -29,16 +37,20 @@ module.exports = async (req, res) => {
 
     const data = await response.json();
 
-    // Filter by price range
-    const filteredProducts = data.products.filter((product) => {
-      return product.variants.some((variant) => {
+    // Filter by price range (cast query params to float)
+    const min = parseFloat(price_min);
+    const max = parseFloat(price_max);
+
+    const filteredProducts = data.products.filter((product) =>
+      product.variants.some((variant) => {
         const price = parseFloat(variant.price);
-        return price >= price_min && price <= price_max;
-      });
-    });
+        return price >= min && price <= max;
+      })
+    );
 
     res.status(200).json({ products: filteredProducts });
   } catch (error) {
+    console.error('Filter API Error:', error);
     res.status(500).json({ error: 'Internal Server Error', detail: error.message });
   }
 };
