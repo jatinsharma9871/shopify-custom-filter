@@ -9,48 +9,72 @@ module.exports = async (req, res) => {
   const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
   const ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_KEY;
 
-  // Validate env vars
   if (!SHOPIFY_STORE || !ACCESS_TOKEN) {
-    return res.status(500).json({ error: 'Missing env vars' });
+    return res.status(500).json({ error: 'Missing Shopify env vars' });
   }
 
-  // Validate query params
   if (!vendor || !price_min || !price_max) {
-    return res.status(400).json({ error: 'Missing required query parameters' });
+    return res.status(400).json({ error: 'Missing query parameters: vendor, price_min, price_max are required' });
   }
 
-  const url = `https://${SHOPIFY_STORE}/admin/api/2024-04/products.json?vendor=${vendor}&fields=id,title,variants&limit=250`;
+  const min = parseFloat(price_min);
+  const max = parseFloat(price_max);
+
+  let pageInfo = null;
+  let hasNextPage = true;
+  let filteredProducts = [];
 
   try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'X-Shopify-Access-Token': ACCESS_TOKEN,
-        'Content-Type': 'application/json',
-      },
-    });
+    while (hasNextPage) {
+      let url = `https://${SHOPIFY_STORE}/admin/api/2024-04/products.json?limit=250&vendor=${encodeURIComponent(vendor)}&fields=id,title,variants`;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      return res.status(500).json({ error: 'Shopify API error', detail: errorText });
+      if (pageInfo) {
+        url += `&page_info=${pageInfo}`;
+      }
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'X-Shopify-Access-Token': ACCESS_TOKEN,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return res.status(500).json({ error: 'Shopify API error', detail: errorText });
+      }
+
+      const data = await response.json();
+
+      // Filter products in this page by price range
+      const pageFiltered = data.products.filter((product) =>
+        product.variants.some((variant) => {
+          const price = parseFloat(variant.price);
+          return price >= min && price <= max;
+        })
+      );
+
+      filteredProducts.push(...pageFiltered);
+
+      // Handle pagination
+      const linkHeader = response.headers.get('link');
+      if (linkHeader && linkHeader.includes('rel="next"')) {
+        const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+        if (match && match[1]) {
+          const nextUrl = new URL(match[1]);
+          pageInfo = nextUrl.searchParams.get("page_info");
+        } else {
+          hasNextPage = false;
+        }
+      } else {
+        hasNextPage = false;
+      }
     }
 
-    const data = await response.json();
-
-    // Filter by price range (cast query params to float)
-    const min = parseFloat(price_min);
-    const max = parseFloat(price_max);
-
-    const filteredProducts = data.products.filter((product) =>
-      product.variants.some((variant) => {
-        const price = parseFloat(variant.price);
-        return price >= min && price <= max;
-      })
-    );
-
-    res.status(200).json({ products: filteredProducts });
+    return res.status(200).json({ products: filteredProducts });
   } catch (error) {
     console.error('Filter API Error:', error);
-    res.status(500).json({ error: 'Internal Server Error', detail: error.message });
+    return res.status(500).json({ error: 'Internal Server Error', detail: error.message });
   }
 };
