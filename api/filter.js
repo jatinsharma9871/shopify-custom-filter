@@ -1,68 +1,73 @@
-const fetch = require('node-fetch');
-
-async function fetchAllProducts(accessToken, shop, limit = 250) {
-  let products = [];
-  let pageInfo = null;
-  let hasNextPage = true;
-
-  while (hasNextPage) {
-    const url = new URL(`https://${shop}/admin/api/2024-04/products.json`);
-    url.searchParams.append('limit', limit);
-
-    if (pageInfo) {
-      url.searchParams.append('page_info', pageInfo);
-    }
-
-    const res = await fetch(url.toString(), {
-      headers: {
-        'X-Shopify-Access-Token': accessToken,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (!res.ok) {
-      const errorBody = await res.text();
-      throw new Error(`Shopify API error: ${errorBody}`);
-    }
-
-    const linkHeader = res.headers.get('link');
-    const body = await res.json();
-    products = products.concat(body.products);
-
-    if (linkHeader && linkHeader.includes('rel="next"')) {
-      const match = linkHeader.match(/page_info=([^&>]+)/);
-      pageInfo = match ? match[1] : null;
-      hasNextPage = !!pageInfo;
-    } else {
-      hasNextPage = false;
-    }
-  }
-
-  return products;
-}
+// /api/filter.js (Vercel API route)
+const fetch = require("node-fetch");
 
 module.exports = async (req, res) => {
+  const { query: { vendor, productType, title, tag }, method } = req;
+
+  const queryParts = [];
+
+  if (vendor) queryParts.push(`vendor:${vendor}`);
+  if (productType) queryParts.push(`product_type:${productType}`);
+  if (title) queryParts.push(`title:*${title}*`);
+  if (tag) queryParts.push(`tag:${tag}`);
+
+  const graphqlQuery = {
+    query: `
+      {
+        products(first: 100, query: "${queryParts.join(' ')}") {
+          edges {
+            cursor
+            node {
+              id
+              title
+              vendor
+              productType
+              tags
+              handle
+              variants(first: 1) {
+                edges {
+                  node {
+                    price
+                  }
+                }
+              }
+              images(first: 1) {
+                edges {
+                  node {
+                    originalSrc
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `,
+  };
+
   try {
-    const shop = process.env.SHOPIFY_SHOP;
-    const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
+    const response = await fetch(
+      "https://YOUR_STORE.myshopify.com/admin/api/2023-10/graphql.json",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_API_TOKEN,
+        },
+        body: JSON.stringify(graphqlQuery),
+      }
+    );
 
-    const { vendor, product_type, tag, price_min, price_max } = req.query;
+    const data = await response.json();
 
-    const allProducts = await fetchAllProducts(accessToken, shop);
+    if (!response.ok || data.errors) {
+      return res.status(500).json({ error: "Shopify GraphQL error", detail: data.errors });
+    }
 
-    const filtered = allProducts.filter(product => {
-      const matchVendor = vendor ? product.vendor === vendor : true;
-      const matchType = product_type ? product.product_type === product_type : true;
-      const matchTag = tag ? product.tags.includes(tag) : true;
-      const price = parseFloat(product.variants[0]?.price || '0');
-      const matchPriceMin = price_min ? price >= parseFloat(price_min) : true;
-      const matchPriceMax = price_max ? price <= parseFloat(price_max) : true;
+    const products = data.data.products.edges.map(edge => edge.node);
 
-      return matchVendor && matchType && matchTag && matchPriceMin && matchPriceMax;
-    });
-
-    res.status(200).json({ products: filtered });
-  } catch (error) {
-    res.status(500).json({ error: 'Shopify API error', detail: error.message });
+    res.status(200).json({ products });
+  } catch (err) {
+    res.status(500).json({ error: "Server error", detail: err.message });
   }
 };
