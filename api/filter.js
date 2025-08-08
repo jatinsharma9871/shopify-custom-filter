@@ -1,72 +1,146 @@
-// Vercel API - Fetch filters and products via Admin API
-// Make sure you set SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_URL in Vercel Environment Variables
+// api/filter.js
+// Vercel serverless function that pages through Shopify Admin API and returns filtered products.
+// Required env vars: SHOPIFY_STORE_DOMAIN, SHOPIFY_ADMIN_TOKEN
 
-import fetch from "node-fetch";
+const fetch = require("node-fetch");
 
-export default async function handler(req, res) {
-  res.setHeader("Content-Type", "application/json");
+const ADMIN_API_VERSION = "2025-01"; // update if needed
+const PAGE_LIMIT = 250; // max allowed by REST
 
-  try {
-    const { collection, vendor, productType, color, priceMin, priceMax } = req.query;
-    const shop = process.env.SHOPIFY_STORE_URL;
-    const token = process.env.SHOPIFY_ACCESS_TOKEN;
+function buildAdminUrl({ vendor, productType }) {
+  // Base URL with fields to reduce payload weight
+  const baseFields = [
+    "id",
+    "title",
+    "vendor",
+    "product_type",
+    "tags",
+    "handle",
+    "images",
+  ].join(",");
 
-    // Step 1 – Build Shopify Admin API URL
-    let adminUrl = `${shop}/admin/api/2024-04/products.json?limit=250`;
+  let url = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}`;
 
-    if (collection) {
-      adminUrl += `&collection_id=${collection}`;
-    }
+  if (vendor) url += `&vendor=${encodeURIComponent(vendor)}`;
+  if (productType) url += `&product_type=${encodeURIComponent(productType)}`;
 
-    // Step 2 – Get all products (loop until done)
-    let products = [];
-    let pageInfo = null;
-    do {
-      const url = pageInfo ? `${adminUrl}&page_info=${pageInfo}` : adminUrl;
+  return url;
+}
 
-      const resp = await fetch(url, {
-        headers: {
-          "X-Shopify-Access-Token": token,
-          "Content-Type": "application/json",
-        },
-      });
+function parseNextPageInfo(linkHeader) {
+  // Link header example contains rel="next" with page_info param
+  if (!linkHeader) return null;
+  const match = linkHeader.match(/<[^>]+page_info=([^&>]+)[^>]*>;\s*rel="next"/);
+  return match ? match[1] : null;
+}
 
-      const linkHeader = resp.headers.get("link");
-      const data = await resp.json();
+async function fetchAdminPage(url) {
+  const resp = await fetch(url, {
+    headers: {
+      "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+    },
+  });
 
-      products = products.concat(data.products);
+  if (!resp.ok) {
+    const text = await resp.text();
+    const err = new Error(`Shopify Admin API error: ${resp.status} ${resp.statusText} - ${text}`);
+    err.status = resp.status;
+    throw err;
+  }
 
-      if (linkHeader && linkHeader.includes('rel="next"')) {
-        pageInfo = linkHeader.match(/page_info=([^&>]+)/)[1];
-      } else {
-        pageInfo = null;
+  const data = await resp.json();
+  const linkHeader = resp.headers.get("link");
+  const nextPageInfo = parseNextPageInfo(linkHeader);
+
+  return {
+    products: data.products || [],
+    nextPageInfo,
+  };
+}
+
+function applyClientFilters(products, { title, tag }) {
+  const titleLower = title ? title.toLowerCase() : null;
+  const tagLower = tag ? tag.toLowerCase() : null;
+
+  return products.filter((p) => {
+    if (titleLower) {
+      if (!p.title || p.title.toLowerCase().indexOf(titleLower) === -1) {
+        return false;
       }
-    } while (pageInfo);
+    }
+    if (tagLower) {
+      // p.tags is a comma-separated string typically - normalise and check
+      const tagsString = (p.tags || "").toLowerCase();
+      // exact match as a tag token
+      const tagsArray = tagsString.split(",").map(t => t.trim());
+      if (!tagsArray.includes(tagLower)) return false;
+    }
+    return true;
+  });
+}
 
-    // Step 3 – Extract filter values
-    const vendors = [...new Set(products.map(p => p.vendor).filter(Boolean))].sort();
-    const productTypes = [...new Set(products.map(p => p.product_type).filter(Boolean))].sort();
+module.exports = async function (req, res) {
+  try {
+    // Accept GET or POST (App Proxy often uses GET)
+    const params = req.method === "POST" ? req.body : req.query;
 
-    const colors = [];
-    products.forEach(p => {
-      const colorOption = p.options.find(opt => opt.name.toLowerCase() === "color");
-      if (colorOption) {
-        colorOption.values.forEach(val => {
-          if (!colors.includes(val)) colors.push(val);
+    const vendor = params.vendor || "";
+    const productType = params.productType || params.product_type || "";
+    const title = params.title || "";
+    const tag = params.tag || "";
+
+    // Build initial Admin URL (vendor/product_type applied server-side)
+    let adminUrl = buildAdminUrl({ vendor, productType });
+
+    const allProducts = [];
+
+    // Page through until no next page_info
+    let nextPageInfo = null;
+    let loopCount = 0;
+    const MAX_PAGES = 10000; // safety cap to avoid infinite loops
+
+    do {
+      // if we have a page_info, append it instead of building the url again
+      const url = nextPageInfo
+        ? `${adminUrl}&page_info=${encodeURIComponent(nextPageInfo)}`
+        : adminUrl;
+
+      const { products, nextPageInfo: newPageInfo } = await fetchAdminPage(url);
+
+      // push only minimal product fields (can be adjusted)
+      for (const p of products) {
+        allProducts.push({
+          id: p.id,
+          title: p.title,
+          vendor: p.vendor,
+          productType: p.product_type,
+          tags: p.tags,
+          handle: p.handle,
+          images: (p.images || []).map(img => ({ src: img.src, alt: img.alt })),
         });
       }
-    });
 
-    // Step 4 – Send response
+      nextPageInfo = newPageInfo;
+      loopCount += 1;
+      // Safety break
+      if (loopCount >= MAX_PAGES) break;
+    } while (nextPageInfo);
+
+    // Apply client-side filters not supported directly by Admin query (title, tag)
+    const filtered = applyClientFilters(allProducts, { title, tag });
+
+    // NOTE: Consider adding server-side pagination for the response if result set is huge.
+    res.setHeader("Content-Type", "application/json");
     res.status(200).json({
-      vendors,
-      productTypes,
-      colors,
-      products,
+      count: filtered.length,
+      products: filtered,
     });
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Failed to fetch filters" });
+  } catch (err) {
+    console.error("Filter API error:", err && err.message ? err.message : err);
+    const status = (err && err.status) || 500;
+    res.setHeader("Content-Type", "application/json");
+    res.status(status).json({ error: err.message || "Internal server error" });
   }
-}
+};
