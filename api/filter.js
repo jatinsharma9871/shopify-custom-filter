@@ -1,23 +1,24 @@
 // api/filter.js
 const ADMIN_API_VERSION = "2025-01";
-const PAGE_LIMIT = 250; // max per request
+const PAGE_LIMIT = 250; // Max per Admin REST API request
 
+// Dynamic import for node-fetch (ESM)
 async function fetchFn(url, options) {
   const fetch = (await import("node-fetch")).default;
   return fetch(url, options);
 }
 
-function buildAdminUrl({ vendor, productType }) {
-  const baseFields = [
-    "id",
-    "title",
-    "vendor",
-    "product_type",
-    "tags",
-    "handle",
-    "images",
-  ].join(",");
+const baseFields = [
+  "id",
+  "title",
+  "vendor",
+  "product_type",
+  "tags",
+  "handle",
+  "images",
+].join(",");
 
+function buildAdminUrl({ vendor, productType }) {
   let url = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}`;
   if (vendor) url += `&vendor=${encodeURIComponent(vendor)}`;
   if (productType) url += `&product_type=${encodeURIComponent(productType)}`;
@@ -71,15 +72,19 @@ module.exports = async (req, res) => {
     const title = params.title || "";
     const tag = params.tag || "";
 
-    let adminUrl = buildAdminUrl({ vendor, productType });
-    let nextPageInfo = null;
     const allProducts = [];
+    let nextPageInfo = null;
     let loopCount = 0;
 
     do {
-      const url = nextPageInfo
-        ? `${adminUrl}&page_info=${encodeURIComponent(nextPageInfo)}`
-        : adminUrl;
+      let url;
+      if (nextPageInfo) {
+        // After first page, only send page_info (no vendor/product_type allowed)
+        url = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}&page_info=${encodeURIComponent(nextPageInfo)}`;
+      } else {
+        // First page: can include vendor/product_type filters
+        url = buildAdminUrl({ vendor, productType });
+      }
 
       const { products, nextPageInfo: newPageInfo } = await fetchAdminPage(url);
 
@@ -99,6 +104,7 @@ module.exports = async (req, res) => {
       loopCount++;
     } while (nextPageInfo && loopCount < 10000);
 
+    // Apply title/tag filters client-side
     const filtered = applyClientFilters(allProducts, { title, tag });
 
     res.setHeader("Content-Type", "application/json");
