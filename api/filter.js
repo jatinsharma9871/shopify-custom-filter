@@ -1,6 +1,7 @@
 const ADMIN_API_VERSION = "2025-01";
 const PAGE_LIMIT = 250; // Max per Admin REST API request
 
+// Dynamic import for node-fetch (ESM)
 async function fetchFn(url, options) {
   const fetch = (await import("node-fetch")).default;
   return fetch(url, options);
@@ -14,7 +15,7 @@ const baseFields = [
   "tags",
   "handle",
   "images",
-  "variants" // Needed for price range
+  "variants"
 ].join(",");
 
 function buildAdminUrl({ vendor, productType }) {
@@ -41,15 +42,24 @@ async function fetchAdminPage(url) {
 
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`Shopify Admin API error: ${resp.status} ${resp.statusText} - ${text}`);
+    console.error("Shopify API error body:", text);
+    throw new Error(`Shopify Admin API error: ${resp.status} ${resp.statusText}`);
   }
 
-  const data = await resp.json();
+  let data;
+  try {
+    data = await resp.json();
+  } catch (err) {
+    const text = await resp.text();
+    console.error("Invalid JSON from Shopify:", text);
+    throw err;
+  }
+
   const nextPageInfo = parseNextPageInfo(resp.headers.get("link"));
   return { products: data.products || [], nextPageInfo };
 }
 
-function applyClientFilters(products, { title, tag }) {
+function applyClientFilters(products, { title, tag, priceMin, priceMax }) {
   const titleLower = title?.toLowerCase() || null;
   const tagLower = tag?.toLowerCase() || null;
 
@@ -59,12 +69,19 @@ function applyClientFilters(products, { title, tag }) {
       const tagsArray = (p.tags || "").toLowerCase().split(",").map(t => t.trim());
       if (!tagsArray.includes(tagLower)) return false;
     }
+    if (priceMin != null || priceMax != null) {
+      const prices = (p.variants || []).map(v => parseFloat(v.price)).filter(Boolean);
+      const min = Math.min(...prices);
+      const max = Math.max(...prices);
+      if (priceMin != null && max < priceMin) return false;
+      if (priceMax != null && min > priceMax) return false;
+    }
     return true;
   });
 }
 
 module.exports = async (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Origin", "*"); // Or specific domain
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
@@ -79,8 +96,57 @@ module.exports = async (req, res) => {
     const productType = params.productType || params.product_type || "";
     const title = params.title || "";
     const tag = params.tag || "";
-    const metaOnly = params.meta_only === "true";
+    const priceMin = params.price_min ? parseFloat(params.price_min) : null;
+    const priceMax = params.price_max ? parseFloat(params.price_max) : null;
 
+    // --- META ONLY BRANCH ---
+    if (params.meta_only) {
+      let allProducts = [];
+      let nextPageInfo = null;
+      let loopCount = 0;
+
+      do {
+        let url;
+        if (nextPageInfo) {
+          url = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}&page_info=${encodeURIComponent(nextPageInfo)}`;
+        } else {
+          url = buildAdminUrl({});
+        }
+        const { products, nextPageInfo: newPageInfo } = await fetchAdminPage(url);
+        allProducts.push(...products);
+        nextPageInfo = newPageInfo;
+        loopCount++;
+      } while (nextPageInfo && loopCount < 10); // Limit for meta fetch
+
+      const vendors = [...new Set(allProducts.map(p => p.vendor).filter(Boolean))];
+      const priceValues = [];
+      const colors = new Set();
+
+      allProducts.forEach(p => {
+        if (p.variants) {
+          p.variants.forEach(v => {
+            if (v.price) priceValues.push(parseFloat(v.price));
+          });
+        }
+        (p.tags || "").split(",").forEach(tag => {
+          const t = tag.trim();
+          if (t.match(/^color:/i)) colors.add(t.replace(/^color:/i, "").trim());
+        });
+      });
+
+      const minPrice = priceValues.length ? Math.min(...priceValues) : 0;
+      const maxPrice = priceValues.length ? Math.max(...priceValues) : 0;
+
+      res.status(200).json({
+        price_min: minPrice,
+        price_max: maxPrice,
+        vendors,
+        colors: Array.from(colors),
+      });
+      return;
+    }
+
+    // --- MAIN PRODUCT FETCH ---
     const allProducts = [];
     let nextPageInfo = null;
     let loopCount = 0;
@@ -104,7 +170,7 @@ module.exports = async (req, res) => {
           tags: p.tags,
           handle: p.handle,
           images: (p.images || []).map(img => ({ src: img.src, alt: img.alt })),
-          prices: (p.variants || []).map(v => v.price)
+          variants: p.variants || []
         });
       });
 
@@ -112,37 +178,14 @@ module.exports = async (req, res) => {
       loopCount++;
     } while (nextPageInfo && loopCount < 10000);
 
-    if (metaOnly) {
-      // Generate vendor list
-      const vendors = [...new Set(allProducts.map(p => p.vendor))].filter(Boolean);
-
-      // Price range
-      const allPrices = allProducts.flatMap(p => p.prices.map(price => parseFloat(price) || 0));
-      const priceMin = allPrices.length ? Math.min(...allPrices) : 0;
-      const priceMax = allPrices.length ? Math.max(...allPrices) : 0;
-
-      // Colors (from tags or option values in your case)
-      const colors = [...new Set(
-        allProducts.flatMap(p =>
-          (p.tags || "").split(",").map(t => t.trim()).filter(t => /^color:/i.test(t))
-        ).map(t => t.replace(/^color:/i, ""))
-      )].filter(Boolean);
-
-      return res.status(200).json({
-        vendors,
-        price_min: priceMin,
-        price_max: priceMax,
-        colors
-      });
-    }
-
-    const filtered = applyClientFilters(allProducts, { title, tag });
+    const filtered = applyClientFilters(allProducts, { title, tag, priceMin, priceMax });
 
     res.setHeader("Content-Type", "application/json");
     res.status(200).json({
       count: filtered.length,
       products: filtered,
     });
+
   } catch (err) {
     console.error("Filter API error:", err);
     res.status(500).json({ error: err.message || "Internal server error" });
