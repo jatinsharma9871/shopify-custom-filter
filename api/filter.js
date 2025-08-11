@@ -1,7 +1,12 @@
-const ADMIN_API_VERSION = "2025-01";
-const PAGE_LIMIT = 250; // Max per Admin REST API request
+// filter.js — Optimized for Shopify Admin API + Vercel
 
-// Dynamic import for node-fetch (ESM)
+const ADMIN_API_VERSION = "2025-01";
+const PAGE_LIMIT = 250;
+const CACHE_TTL = 60 * 1000; // 1 minute cache
+
+// Simple in-memory cache
+const cache = new Map();
+
 async function fetchFn(url, options) {
   const fetch = (await import("node-fetch")).default;
   return fetch(url, options);
@@ -32,22 +37,29 @@ function parseNextPageInfo(linkHeader) {
 }
 
 async function fetchAdminPage(url) {
-  const resp = await fetchFn(url, {
-    headers: {
-      "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
-      "Content-Type": "application/json",
-      "Accept": "application/json",
-    },
-  });
+  while (true) {
+    const resp = await fetchFn(url, {
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+    });
 
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Shopify Admin API error: ${resp.status} ${resp.statusText} - ${text}`);
+    if (resp.status === 429) {
+      await new Promise(r => setTimeout(r, 600)); // wait then retry
+      continue;
+    }
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Shopify Admin API error: ${resp.status} ${resp.statusText} - ${text}`);
+    }
+
+    const data = await resp.json();
+    const nextPageInfo = parseNextPageInfo(resp.headers.get("link"));
+    return { products: data.products || [], nextPageInfo };
   }
-
-  const data = await resp.json();
-  const nextPageInfo = parseNextPageInfo(resp.headers.get("link"));
-  return { products: data.products || [], nextPageInfo };
 }
 
 function applyClientFilters(products, { title, tag, priceMin, priceMax, size }) {
@@ -64,6 +76,7 @@ function applyClientFilters(products, { title, tag, priceMin, priceMax, size }) 
 
     if (priceMin != null || priceMax != null) {
       const prices = p.variants?.map(v => parseFloat(v.price)) || [];
+      if (!prices.length) return false;
       const minPrice = Math.min(...prices);
       const maxPrice = Math.max(...prices);
       if (priceMin != null && maxPrice < priceMin) return false;
@@ -84,10 +97,10 @@ function applyClientFilters(products, { title, tag, priceMin, priceMax, size }) 
 }
 
 module.exports = async (req, res) => {
- res.setHeader("Access-Control-Allow-Origin", "https://thesverve.com/");
-res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-res.setHeader("Access-Control-Allow-Headers", "Content-Type");
- 
+  res.setHeader("Access-Control-Allow-Origin", "https://thesverve.com");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
@@ -95,8 +108,6 @@ res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   try {
     const params = req.method === "POST" ? req.body : req.query;
-
-    // Map Shopify widget params to our internal vars
     const vendor = params.vendor || "";
     const productType = params.productType || params.product_type || "";
     const title = params.title || "";
@@ -109,69 +120,64 @@ res.setHeader("Access-Control-Allow-Headers", "Content-Type");
       : (params["filter.v.price.lte"] != null ? parseFloat(params["filter.v.price.lte"]) : null);
     const size = params["filter.v.option.size"] || null;
 
-    // Handle meta_only branch
+    const cacheKey = JSON.stringify({ vendor, productType, title, tag, priceMin, priceMax, size, meta: params.meta_only });
+    const cached = cache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+      res.status(200).json(cached.data);
+      return;
+    }
+
+    // Meta fetch branch
     if (params.meta_only) {
       let allProducts = [];
       let nextPageInfo = null;
-      let loopCount = 0;
 
       do {
-        let url = buildAdminUrl({});
-        if (nextPageInfo) {
-          url = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}&page_info=${encodeURIComponent(nextPageInfo)}`;
-        }
-      const { products, nextPageInfo: newPageInfo } = await fetchAdminPage(url);
+        let url = nextPageInfo
+          ? `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}&page_info=${encodeURIComponent(nextPageInfo)}`
+          : buildAdminUrl({});
 
-// Wait 600ms between requests to respect 2 req/sec limit
-if (newPageInfo) {
-  await new Promise(r => setTimeout(r, 600));
-}
-
+        const { products, nextPageInfo: newPageInfo } = await fetchAdminPage(url);
         allProducts.push(...products);
+
+        // If we already have a large enough sample, stop early
+        if (allProducts.length >= 1000) break;
+
         nextPageInfo = newPageInfo;
-        loopCount++;
-      } while (nextPageInfo && loopCount < 50); // Limit pages for meta fetch
+      } while (nextPageInfo);
 
       const vendors = [...new Set(allProducts.map(p => p.vendor).filter(Boolean))];
       const priceValues = [];
       const colors = new Set();
 
       allProducts.forEach(p => {
-        if (p.variants) {
-          p.variants.forEach(v => {
-            if (v.price) priceValues.push(parseFloat(v.price));
-          });
-        }
+        (p.variants || []).forEach(v => v.price && priceValues.push(parseFloat(v.price)));
         (p.tags || "").split(",").forEach(tag => {
           const t = tag.trim();
           if (/^color:/i.test(t)) colors.add(t.replace(/^color:/i, "").trim());
         });
       });
 
-      const priceMinMeta = Math.min(...priceValues);
-      const priceMaxMeta = Math.max(...priceValues);
-
-      res.status(200).json({
-        price_min: priceMinMeta,
-        price_max: priceMaxMeta,
+      const metaData = {
+        price_min: priceValues.length ? Math.min(...priceValues) : 0,
+        price_max: priceValues.length ? Math.max(...priceValues) : 0,
         vendors,
         colors: Array.from(colors),
-      });
+      };
+
+      cache.set(cacheKey, { timestamp: Date.now(), data: metaData });
+      res.status(200).json(metaData);
       return;
     }
 
-    // Fetch all products with paging
+    // Normal fetch
     const allProducts = [];
     let nextPageInfo = null;
-    let loopCount = 0;
 
     do {
-      let url;
-      if (nextPageInfo) {
-        url = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}&page_info=${encodeURIComponent(nextPageInfo)}`;
-      } else {
-        url = buildAdminUrl({ vendor, productType });
-      }
+      let url = nextPageInfo
+        ? `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}&page_info=${encodeURIComponent(nextPageInfo)}`
+        : buildAdminUrl({ vendor, productType });
 
       const { products, nextPageInfo: newPageInfo } = await fetchAdminPage(url);
 
@@ -188,18 +194,22 @@ if (newPageInfo) {
         });
       });
 
-      nextPageInfo = newPageInfo;
-      loopCount++;
-    } while (nextPageInfo && loopCount < 1000);
+      // Stop early if we already have more than 5000 products
+      if (allProducts.length >= 5000) break;
 
-    // Apply client filters
+      nextPageInfo = newPageInfo;
+    } while (nextPageInfo);
+
     const filtered = applyClientFilters(allProducts, { title, tag, priceMin, priceMax, size });
 
-    res.setHeader("Content-Type", "application/json");
-    res.status(200).json({
+    const responseData = {
       count: filtered.length,
       products: filtered,
-    });
+    };
+
+    cache.set(cacheKey, { timestamp: Date.now(), data: responseData });
+    res.status(200).json(responseData);
+
   } catch (err) {
     console.error("Filter API error:", err);
     res.status(500).json({ error: err.message || "Internal server error" });
