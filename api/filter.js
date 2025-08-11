@@ -1,8 +1,6 @@
-// api/filter.js
 const ADMIN_API_VERSION = "2025-01";
 const PAGE_LIMIT = 250; // Max per Admin REST API request
 
-// Dynamic import for node-fetch (ESM)
 async function fetchFn(url, options) {
   const fetch = (await import("node-fetch")).default;
   return fetch(url, options);
@@ -16,6 +14,7 @@ const baseFields = [
   "tags",
   "handle",
   "images",
+  "variants" // Needed for price range
 ].join(",");
 
 function buildAdminUrl({ vendor, productType }) {
@@ -65,7 +64,7 @@ function applyClientFilters(products, { title, tag }) {
 }
 
 module.exports = async (req, res) => {
-    res.setHeader("Access-Control-Allow-Origin", "*"); // Or specific domain
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
@@ -73,12 +72,14 @@ module.exports = async (req, res) => {
     res.status(200).end();
     return;
   }
+
   try {
     const params = req.method === "POST" ? req.body : req.query;
     const vendor = params.vendor || "";
     const productType = params.productType || params.product_type || "";
     const title = params.title || "";
     const tag = params.tag || "";
+    const metaOnly = params.meta_only === "true";
 
     const allProducts = [];
     let nextPageInfo = null;
@@ -87,10 +88,8 @@ module.exports = async (req, res) => {
     do {
       let url;
       if (nextPageInfo) {
-        // After first page, only send page_info (no vendor/product_type allowed)
         url = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}&page_info=${encodeURIComponent(nextPageInfo)}`;
       } else {
-        // First page: can include vendor/product_type filters
         url = buildAdminUrl({ vendor, productType });
       }
 
@@ -105,6 +104,7 @@ module.exports = async (req, res) => {
           tags: p.tags,
           handle: p.handle,
           images: (p.images || []).map(img => ({ src: img.src, alt: img.alt })),
+          prices: (p.variants || []).map(v => v.price)
         });
       });
 
@@ -112,7 +112,30 @@ module.exports = async (req, res) => {
       loopCount++;
     } while (nextPageInfo && loopCount < 10000);
 
-    // Apply title/tag filters client-side
+    if (metaOnly) {
+      // Generate vendor list
+      const vendors = [...new Set(allProducts.map(p => p.vendor))].filter(Boolean);
+
+      // Price range
+      const allPrices = allProducts.flatMap(p => p.prices.map(price => parseFloat(price) || 0));
+      const priceMin = allPrices.length ? Math.min(...allPrices) : 0;
+      const priceMax = allPrices.length ? Math.max(...allPrices) : 0;
+
+      // Colors (from tags or option values in your case)
+      const colors = [...new Set(
+        allProducts.flatMap(p =>
+          (p.tags || "").split(",").map(t => t.trim()).filter(t => /^color:/i.test(t))
+        ).map(t => t.replace(/^color:/i, ""))
+      )].filter(Boolean);
+
+      return res.status(200).json({
+        vendors,
+        price_min: priceMin,
+        price_max: priceMax,
+        colors
+      });
+    }
+
     const filtered = applyClientFilters(allProducts, { title, tag });
 
     res.setHeader("Content-Type", "application/json");
