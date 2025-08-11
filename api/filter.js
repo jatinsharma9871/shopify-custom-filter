@@ -120,7 +120,13 @@ module.exports = async (req, res) => {
         if (nextPageInfo) {
           url = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}&page_info=${encodeURIComponent(nextPageInfo)}`;
         }
-        const { products, nextPageInfo: newPageInfo } = await fetchAdminPage(url);
+      const { products, nextPageInfo: newPageInfo } = await fetchAdminPage(url);
+
+// Wait 600ms between requests to respect 2 req/sec limit
+if (newPageInfo) {
+  await new Promise(r => setTimeout(r, 600));
+}
+
         allProducts.push(...products);
         nextPageInfo = newPageInfo;
         loopCount++;
@@ -184,7 +190,7 @@ module.exports = async (req, res) => {
 
       nextPageInfo = newPageInfo;
       loopCount++;
-    } while (nextPageInfo && loopCount < 10000);
+    } while (nextPageInfo && loopCount < 1000);
 
     // Apply client filters
     const filtered = applyClientFilters(allProducts, { title, tag, priceMin, priceMax, size });
