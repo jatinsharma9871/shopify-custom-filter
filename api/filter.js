@@ -1,9 +1,8 @@
-// /api/filter.js — Admin API filtering + native section HTML rendering
 const ADMIN_API_VERSION = "2025-01";
 const PAGE_LIMIT = 250;
-const CACHE_TTL = 60 * 1000; // 1 minute cache
-const MAX_PAGES = 50; // Safety cap
-const SECTION_ID = "main-collection-product-grid"; // Minimog main grid
+const CACHE_TTL = 60 * 1000; // 1 min cache
+const MAX_PAGES = 50; // max pages to fetch
+const SECTION_ID = "main-collection-product-grid"; // Minimog main grid section
 
 const cache = new Map();
 
@@ -16,11 +15,58 @@ const baseFields = [
   "id", "title", "vendor", "product_type", "tags", "handle", "images", "variants"
 ].join(",");
 
+// REST URL builder
 function buildAdminUrl({ vendor, productType }) {
   let url = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}`;
   if (vendor) url += `&vendor=${encodeURIComponent(vendor)}`;
   if (productType) url += `&product_type=${encodeURIComponent(productType)}`;
   return url;
+}
+
+// Optional: GraphQL query builder example (currently unused)
+function buildGraphQLQuery({ vendor, productType, cursor }) {
+  return {
+    query: `
+      query ($first: Int!, $vendor: String, $productType: String, $after: String) {
+        products(first: $first, after: $after, query: ${vendor || productType ? '""' : '""'}) {
+          edges {
+            cursor
+            node {
+              id
+              title
+              vendor
+              productType
+              tags
+              handle
+              images(first: 5) {
+                edges {
+                  node {
+                    src
+                    altText
+                  }
+                }
+              }
+              variants(first: 10) {
+                edges {
+                  node {
+                    price
+                    selectedOptions {
+                      name
+                      value
+                    }
+                  }
+                }
+              }
+            }
+          }
+          pageInfo {
+            hasNextPage
+          }
+        }
+      }
+    `,
+    variables: { first: PAGE_LIMIT, vendor, productType, after: cursor }
+  };
 }
 
 function parseNextPageInfo(linkHeader) {
@@ -88,7 +134,7 @@ function applyClientFilters(products, { title, tag, priceMin, priceMax, size }) 
   });
 }
 
-// Fetch Minimog section HTML from storefront
+// Fetch Minimog section HTML from storefront for updated product grid UI
 async function fetchSectionHTML(params) {
   const query = new URLSearchParams(params).toString();
   const storefrontURL = `https://${process.env.SHOPIFY_STORE_DOMAIN}/collections/${params.collectionHandle}?section_id=${SECTION_ID}&${query}`;
@@ -105,6 +151,10 @@ module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") return res.status(200).end();
+
+  if (!process.env.SHOPIFY_STORE_DOMAIN || !process.env.SHOPIFY_ADMIN_TOKEN) {
+    return res.status(500).json({ error: "Missing SHOPIFY_STORE_DOMAIN or SHOPIFY_ADMIN_TOKEN env vars" });
+  }
 
   try {
     const params = req.method === "POST" ? req.body : req.query;
@@ -124,13 +174,13 @@ module.exports = async (req, res) => {
       return res.status(200).json(cached.data);
     }
 
-    // 1. Get products from Admin API
+    // Fetch products from Admin API (REST)
     const allProducts = [];
     let nextPageInfo = null;
     let pageCount = 0;
 
     do {
-      let url = nextPageInfo
+      const url = nextPageInfo
         ? `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/products.json?limit=${PAGE_LIMIT}&fields=${encodeURIComponent(baseFields)}&page_info=${encodeURIComponent(nextPageInfo)}`
         : buildAdminUrl({ vendor, productType });
 
@@ -153,13 +203,13 @@ module.exports = async (req, res) => {
       nextPageInfo = newPageInfo;
     } while (nextPageInfo);
 
-    // 2. Filter products
+    // Apply additional client-side filters
     const filtered = applyClientFilters(allProducts, { title, tag, priceMin, priceMax, size });
 
-    // 3. Fetch Minimog section HTML
+    // Fetch Minimog section HTML to render filtered product grid
     const html = await fetchSectionHTML({ ...params, collectionHandle });
 
-    // 4. Build response
+    // Cache & respond
     const responseData = { count: filtered.length, products: filtered, html };
     cache.set(cacheKey, { timestamp: Date.now(), data: responseData });
 
