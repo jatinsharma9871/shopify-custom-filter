@@ -146,7 +146,7 @@ async function fetchSectionHTML(params) {
 }
 
 module.exports = async (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "https://thesverve.com");
+  res.setHeader("Access-Control-Allow-Origin", "https://c4c4szrpl7ofukt0-56868241501.shopifypreview.com");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
