@@ -1,5 +1,5 @@
 const ADMIN_API_VERSION = "2025-01";
-const PAGE_LIMIT = 250;
+const PAGE_LIMIT = 50;
 const CACHE_TTL = 60 * 1000; // 1 min cache
 const MAX_PAGES = 50; // max pages to fetch
 const SECTION_ID = "main-collection-product-grid"; // Minimog main grid section
