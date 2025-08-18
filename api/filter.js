@@ -6,6 +6,10 @@ export default async function handler(req, res) {
     const shop = process.env.SHOPIFY_STORE_DOMAIN;
     const token = process.env.SHOPIFY_ADMIN_TOKEN;
 
+     res.setHeader("Access-Control-Allow-Origin", "*"); // ✅ fix CORS
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
     const query = `
       query Products($query: String, $first: Int!) {
         products(first: $first, query: $query) {
