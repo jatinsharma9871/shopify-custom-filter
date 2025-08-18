@@ -3,7 +3,7 @@ export default async function handler(req, res) {
   try {
     const { q = "", vendor = "", type = "", minPrice = 0, maxPrice = 999999 } = req.query;
 
-    const shop = process.env.SHOPIFY_STORE_DOMAIN;  // yourshop.myshopify.com
+    const shop = process.env.SHOPIFY_STORE_DOMAIN;
     const token = process.env.SHOPIFY_ADMIN_TOKEN;
 
     const query = `
@@ -40,7 +40,8 @@ export default async function handler(req, res) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shopify-Storefront-Access-Token": token,
+       "X-Shopify-Access-Token": token
+
       },
       body: JSON.stringify({
         query,
