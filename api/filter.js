@@ -9,6 +9,7 @@ export default async function handler(req, res) {
      res.setHeader("Access-Control-Allow-Origin", "*"); // ✅ fix CORS
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  
 
     const query = `
       query Products($query: String, $first: Int!) {
@@ -43,6 +44,9 @@ export default async function handler(req, res) {
     const response = await fetch(`https://${shop}/admin/api/2025-01/graphql.json`, {
       method: "POST",
       headers: {
+         "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*", // or your domain
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Content-Type": "application/json",
        "X-Shopify-Access-Token": token
 
