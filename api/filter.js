@@ -45,7 +45,7 @@ export default async function handler(req, res) {
       method: "POST",
       headers: {
          "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*", // or your domain
+    "Access-Control-Allow-Origin": "https://thesverve.com/", // or your domain
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Content-Type": "application/json",
        "X-Shopify-Access-Token": token
