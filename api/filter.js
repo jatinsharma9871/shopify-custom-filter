@@ -4,7 +4,7 @@ export default async function handler(req, res) {
     const { q = "", vendor = "", type = "", minPrice = 0, maxPrice = 999999 } = req.query;
 
     const shop = process.env.SHOPIFY_STORE_DOMAIN;  // yourshop.myshopify.com
-    const token = process.env.SHOPIFY_STOREFRONT_TOKEN;
+    const token = process.env.SHOPIFY_ADMIN_TOKEN;
 
     const query = `
       query Products($query: String, $first: Int!) {
