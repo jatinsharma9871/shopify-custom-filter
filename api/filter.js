@@ -69,11 +69,18 @@ export default async function handler(req, res) {
       `;
     }).join("");
 
-    res.status(200).send(`
-      <div class="sf__product-listing sf__col-3 flex flex-wrap -mx-2 xl:-mx-3">
-        ${html}
-      </div>
-    `);
+    res.status(200).json({
+  products: result.data.products.edges.map(({ node }) => ({
+    id: node.id,
+    title: node.title,
+    vendor: node.vendor,
+    product_type: node.productType,
+    url: `/products/${node.handle}`,
+    featured_image: node.featuredImage?.url || "",
+    price: node.priceRange.minVariantPrice.amount * 100 // keep integer (cents)
+  }))
+});
+
   } catch (err) {
     console.error("Search API Error:", err);
     res.status(500).send("Server error");
