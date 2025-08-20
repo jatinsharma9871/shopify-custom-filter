@@ -1,75 +1,61 @@
+// File: /api/filter.js
+
+import fetch from "node-fetch";
+
 export default async function handler(req, res) {
   try {
-    const { q = "", vendor = "", type = "" } = req.query;
+    const { q } = req.query; // search term for designer (vendor)
+    
+    // --- Required env vars on Vercel ---
+    // SHOPIFY_STORE_URL = yourstore.myshopify.com
+    // SHOPIFY_ADMIN_API = Admin API access token
+    const shop = process.env.SHOPIFY_STORE_URL;
+    const token = process.env.SHOPIFY_ADMIN_API;
 
-    const shop = process.env.SHOPIFY_STORE_DOMAIN;
-    const token = process.env.SHOPIFY_ADMIN_TOKEN;
+    const url = `https://${shop}/admin/api/2025-01/products.json?fields=vendor&limit=250`;
 
-    // CORS headers
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    let vendors = new Set();
+    let pageInfo = null;
 
-    const query = `
-      query Products($query: String, $first: Int!) {
-        products(first: $first, query: $query) {
-          edges {
-            node {
-              id
-              handle
-              title
-              vendor
-              productType
-              onlineStoreUrl
-              featuredImage { url altText }
-              priceRange {
-                minVariantPrice { amount currencyCode }
-                maxVariantPrice { amount currencyCode }
-              }
-            }
-          }
-        }
+    do {
+      const response = await fetch(pageInfo ? `${url}&page_info=${pageInfo}` : url, {
+        headers: {
+          "X-Shopify-Access-Token": token,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Shopify API error: ${response.statusText}`);
       }
-    `;
 
-    // Build Shopify query string
-    let searchQuery = q ? `title:*${q}*` : "";
-    if (vendor) searchQuery += ` vendor:${vendor}`;
-    if (type) searchQuery += ` product_type:${type}`;
+      const data = await response.json();
 
-    const response = await fetch(`https://${shop}/admin/api/2025-01/graphql.json`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": token,
-      },
-      body: JSON.stringify({
-        query,
-        variables: { query: searchQuery, first: 50 },
-      }),
-    });
+      data.products.forEach((p) => {
+        if (p.vendor) vendors.add(p.vendor.trim());
+      });
 
-    const result = await response.json();
-    if (result.errors) {
-      console.error(result.errors);
-      return res.status(500).json({ error: "Shopify GraphQL error", details: result.errors });
+      // Handle pagination
+      const linkHeader = response.headers.get("link");
+      if (linkHeader && linkHeader.includes("rel=\"next\"")) {
+        const match = linkHeader.match(/page_info=([^&>]+)/);
+        pageInfo = match ? match[1] : null;
+      } else {
+        pageInfo = null;
+      }
+    } while (pageInfo);
+
+    let vendorList = Array.from(vendors).sort((a, b) => a.localeCompare(b));
+
+    // Filter by search term if provided
+    if (q) {
+      const term = q.toLowerCase();
+      vendorList = vendorList.filter((v) => v.toLowerCase().includes(term));
     }
 
-    // ✅ Return clean JSON for frontend
-    res.status(200).json({
-      products: result.data.products.edges.map(({ node }) => ({
-        id: node.id,
-        title: node.title,
-        vendor: node.vendor,
-        product_type: node.productType,
-        url: `/products/${node.handle}`,
-        featured_image: node.featuredImage?.url || "",
-        price: parseFloat(node.priceRange.minVariantPrice.amount) * 100 // store as integer
-      }))
-    });
-
+    res.status(200).json({ designers: vendorList });
   } catch (err) {
-    console.error("Search API Error:", err);
-    res.status(500).json({ error: "Server error", details: err.message });
+    console.error("Error fetching vendors:", err);
+    res.status(500).json({ error: "Failed to fetch designers" });
   }
 }
