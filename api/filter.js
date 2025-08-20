@@ -17,8 +17,8 @@ export default async function handler(req, res) {
             node {
               id
               handle
-              title
-              vendor
+               vendor
+               title
               productType
               onlineStoreUrl
               featuredImage { url altText }
