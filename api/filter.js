@@ -16,7 +16,7 @@ export default async function handler(req, res) {
 
     const response = await fetch(url, {
       method: "GET",
-      headers: {
+      headers: { 
         "X-Shopify-Access-Token": accessToken,
         "Content-Type": "application/json",
       },
