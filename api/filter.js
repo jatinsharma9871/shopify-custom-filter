@@ -1,75 +1,78 @@
+import fetch from "node-fetch";
+
 export default async function handler(req, res) {
   try {
-    const { q = "", vendor = "", type = "" } = req.query;
+    const { vendor, minPrice, maxPrice, page = 1, limit = 20 } = req.query;
 
-    const shop = process.env.SHOPIFY_STORE_DOMAIN;
-    const token = process.env.SHOPIFY_ADMIN_TOKEN;
+    // Shopify Admin API credentials
+    const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
+    const SHOPIFY_ADMIN_API_KEY = process.env.SHOPIFY_ADMIN_API_KEY;
+    const SHOPIFY_ADMIN_PASSWORD = process.env.SHOPIFY_ADMIN_PASSWORD;
 
-    // CORS headers
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    const auth = Buffer.from(
+      `${SHOPIFY_ADMIN_API_KEY}:${SHOPIFY_ADMIN_PASSWORD}`
+    ).toString("base64");
 
-    const query = `
-      query Products($query: String, $first: Int!) {
-        products(first: $first, query: $query) {
-          edges {
-            node {
-              id
-              handle
-               vendor
-               title
-              productType
-              onlineStoreUrl
-              featuredImage { url altText }
-              priceRange {
-                minVariantPrice { amount currencyCode }
-                maxVariantPrice { amount currencyCode }
-              }
-            }
-          }
-        }
+    // Pagination handling
+    const currentPage = parseInt(page, 10) || 1;
+    const perPage = parseInt(limit, 10) || 20;
+    const skip = (currentPage - 1) * perPage;
+
+    // Fetch products from Shopify Admin API
+    const response = await fetch(
+      `https://${SHOPIFY_STORE}.myshopify.com/admin/api/2025-01/products.json?limit=250`,
+      {
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/json",
+        },
       }
-    `;
+    );
 
-    // Build Shopify query string
-    let searchQuery = q ? `title:*${q}*` : "";
-    if (vendor) searchQuery += ` vendor:${vendor}`;
-    if (type) searchQuery += ` product_type:${type}`;
-
-    const response = await fetch(`https://${shop}/admin/api/2025-01/graphql.json`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": token,
-      },
-      body: JSON.stringify({
-        query,
-        variables: { query: searchQuery, first: 50 },
-      }),
-    });
-
-    const result = await response.json();
-    if (result.errors) {
-      console.error(result.errors);
-      return res.status(500).json({ error: "Shopify GraphQL error", details: result.errors });
+    if (!response.ok) {
+      return res
+        .status(response.status)
+        .json({ error: `Shopify API error: ${response.statusText}` });
     }
 
-    // ✅ Return clean JSON for frontend
-    res.status(200).json({
-      products: result.data.products.edges.map(({ node }) => ({
-        id: node.id,
-        title: node.title,
-        vendor: node.vendor,
-        product_type: node.productType,
-        url: `/products/${node.handle}`,
-        featured_image: node.featuredImage?.url || "",
-        price: parseFloat(node.priceRange.minVariantPrice.amount) * 100 // store as integer
-      }))
-    });
+    let data = await response.json();
+    let products = data.products || [];
 
+    // Filtering by vendor
+    if (vendor) {
+      products = products.filter((p) =>
+        p.vendor.toLowerCase().includes(vendor.toLowerCase())
+      );
+    }
+
+    // Filtering by price range
+    if (minPrice || maxPrice) {
+      products = products.filter((p) => {
+        const price = parseFloat(p.variants?.[0]?.price || 0);
+        if (minPrice && price < parseFloat(minPrice)) return false;
+        if (maxPrice && price > parseFloat(maxPrice)) return false;
+        return true;
+      });
+    }
+
+    // Total count for pagination
+    const totalProducts = products.length;
+    const totalPages = Math.ceil(totalProducts / perPage);
+
+    // Paginate results
+    const paginatedProducts = products.slice(skip, skip + perPage);
+
+    res.status(200).json({
+      products: paginatedProducts,
+      pagination: {
+        totalProducts,
+        totalPages,
+        currentPage,
+        perPage,
+      },
+    });
   } catch (err) {
-    console.error("Search API Error:", err);
-    res.status(500).json({ error: "Server error", details: err.message });
+    console.error("Backend Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 }
