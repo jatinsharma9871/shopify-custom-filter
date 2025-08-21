@@ -1,21 +1,22 @@
-import fetch from "node-fetch";
-
 export default async function handler(req, res) {
   const { cursor, limit = 20 } = req.query;
 
-  const shop = process.env.SHOPIFY_STORE_DOMAIN;
+  const shop = process.env.SHOPIFY_STORE_DOMAIN;   // e.g. mystore.myshopify.com
   const accessToken = process.env.SHOPIFY_ADMIN_TOKEN;
+
+  if (!shop || !accessToken) {
+    console.error("Missing SHOPIFY env variables");
+    return res.status(500).json({ error: "Shopify credentials not configured" });
+  }
 
   try {
     let url = `https://${shop}/admin/api/2025-01/products.json?limit=${limit}`;
 
     if (cursor) {
-      // Add page_info for cursor-based pagination
       url += `&page_info=${cursor}`;
     }
 
     const response = await fetch(url, {
-      method: "GET",
       headers: { 
         "X-Shopify-Access-Token": accessToken,
         "Content-Type": "application/json",
@@ -24,7 +25,8 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      return res.status(500).json({ error: errorText });
+      console.error("Shopify API error:", response.status, errorText);
+      return res.status(response.status).json({ error: errorText });
     }
 
     const data = await response.json();
@@ -54,6 +56,7 @@ export default async function handler(req, res) {
       limit,
     });
   } catch (error) {
+    console.error("Server error:", error);
     res.status(500).json({ error: error.message });
   }
 }
