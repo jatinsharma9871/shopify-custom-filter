@@ -1,115 +1,65 @@
+// /api/filter.js
 export default async function handler(req, res) {
   try {
-    const { q = "", vendor = "", type = "", page = 1, limit = 20 } = req.query;
+    const { page = 1, limit = 20 } = req.query;
 
-    const shop = process.env.SHOPIFY_STORE_DOMAIN;
-    const token = process.env.SHOPIFY_ADMIN_TOKEN;
+    const perPage = parseInt(limit, 10);
+    const currentPage = parseInt(page, 10);
 
-    // CORS headers
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    const shop = process.env.SHOPIFY_STORE_DOMAIN; // e.g. mystore.myshopify.com
+    const token = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN; // Admin API token
 
-    // GraphQL query with pagination
-    const query = `
-      query Products($query: String, $first: Int!, $after: String) {
-        products(first: $first, query: $query, after: $after) {
-          edges {
-            cursor
-            node {
-              id
-              handle
-              vendor
-              title
-              productType
-              onlineStoreUrl
-              featuredImage { url altText }
-              priceRange {
-                minVariantPrice { amount currencyCode }
-                maxVariantPrice { amount currencyCode }
-              }
-            }
-          }
-          pageInfo {
-            hasNextPage
-            hasPreviousPage
-          }
-        }
-      }
-    `;
-
-    // Build Shopify query string
-    let searchQuery = q ? `title:*${q}*` : "";
-    if (vendor) searchQuery += ` vendor:${vendor}`;
-    if (type) searchQuery += ` product_type:${type}`;
-
-    const perPage = Math.min(parseInt(limit), 50); // Shopify max = 50
-    const pageNum = Math.max(parseInt(page), 1);
-
-    let cursor = null;
-    let currentPage = 1;
-    let products = [];
-
-    while (currentPage <= pageNum) {
-      const response = await fetch(`https://${shop}/admin/api/2025-01/graphql.json`, {
-        method: "POST",
+    // ✅ Step 1: Get total product count
+    const countRes = await fetch(
+      `https://${shop}/admin/api/2025-01/products/count.json`,
+      {
         headers: {
-          "Content-Type": "application/json",
           "X-Shopify-Access-Token": token,
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          query,
-          variables: { query: searchQuery || null, first: perPage, after: cursor },
-        }),
-      });
-
-      const result = await response.json();
-
-      if (result.errors) {
-        console.error(result.errors);
-        return res.status(500).json({ error: "Shopify GraphQL error", details: result.errors });
       }
+    );
 
-      const edges = result.data?.products?.edges || [];
-      if (!edges.length) {
-        return res.status(200).json({
-          products: [],
-          pagination: {
-            currentPage: pageNum,
-            totalPages: 1,
-            hasNextPage: false,
-            hasPreviousPage: false,
-          },
-        });
-      }
-
-      if (currentPage === pageNum) {
-        products = edges.map(({ node }) => ({
-          id: node.id,
-          title: node.title,
-          vendor: node.vendor,
-          product_type: node.productType,
-          url: `/products/${node.handle}`,
-          featured_image: node.featuredImage?.url || "",
-          price: parseFloat(node.priceRange.minVariantPrice.amount) * 100,
-        }));
-
-        return res.status(200).json({
-          products,
-          pagination: {
-            currentPage: pageNum,
-            hasNextPage: result.data.products.pageInfo.hasNextPage,
-            hasPreviousPage: result.data.products.pageInfo.hasPreviousPage,
-          },
-        });
-      }
-
-      // go to next page
-      cursor = edges[edges.length - 1].cursor;
-      currentPage++;
+    if (!countRes.ok) {
+      const err = await countRes.text();
+      console.error("Count API Error:", err);
+      throw new Error("Failed to fetch product count");
     }
-  } catch (err) {
-    console.error("Search API Error:", err);
-    res.status(500).json({ error: "Server error", details: err.message });
+
+    const countData = await countRes.json();
+    const totalProducts = countData.count;
+    const totalPages = Math.ceil(totalProducts / perPage);
+
+    // ✅ Step 2: Fetch products with pagination
+    const endpoint = `https://${shop}/admin/api/2025-01/products.json?limit=${perPage}&page=${currentPage}`;
+
+    const response = await fetch(endpoint, {
+      headers: {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.error("Products API Error:", response.status, err);
+      return res.status(response.status).json({ error: err });
+    }
+
+    const data = await response.json();
+
+    // ✅ Step 3: Return clean JSON
+    res.status(200).json({
+      products: data.products || [],
+      pagination: {
+        currentPage,
+        totalPages,
+        hasNextPage: currentPage < totalPages,
+        hasPrevPage: currentPage > 1,
+      },
+    });
+  } catch (error) {
+    console.error("API Error:", error);
+    res.status(500).json({ error: error.message });
   }
 }
