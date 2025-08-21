@@ -6,56 +6,94 @@ export default async function handler(req, res) {
     const perPage = parseInt(limit, 10);
     const currentPage = parseInt(page, 10);
 
-    const shop = process.env.SHOPIFY_STORE_DOMAIN; // e.g. mystore.myshopify.com
-    const token = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN; // Admin API token
+    const shop = process.env.SHOPIFY_STORE_DOMAIN; // your-shop.myshopify.com
+    const token = process.env.SHOPIFY_ADMIN_TOKEN;
 
-    // ✅ Step 1: Get total product count
-    const countRes = await fetch(
-      `https://${shop}/admin/api/2025-01/products/count.json`,
-      {
-        headers: {
-          "X-Shopify-Access-Token": token,
-          "Content-Type": "application/json",
-        },
+    // GraphQL query with pagination
+    const query = `
+      query Products($first: Int!, $after: String) {
+        products(first: $first, after: $after) {
+          edges {
+            cursor
+            node {
+              id
+              title
+              handle
+              vendor
+              productType
+              featuredImage { url altText }
+              priceRange {
+                minVariantPrice { amount currencyCode }
+              }
+            }
+          }
+          pageInfo {
+            hasNextPage
+            hasPreviousPage
+          }
+        }
       }
-    );
+    `;
 
-    if (!countRes.ok) {
-      const err = await countRes.text();
-      console.error("Count API Error:", err);
-      throw new Error("Failed to fetch product count");
+    // Calculate cursor offset
+    // Shopify doesn’t do direct offset pagination, so we simulate:
+    // Page 1 = no cursor, Page 2 = skip (page-1)*limit edges, etc.
+    let afterCursor = null;
+
+    if (currentPage > 1) {
+      // Fetch previous (page-1)*limit products just to get the last cursor
+      const prevQuery = await fetch(`https://${shop}/admin/api/2025-01/graphql.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": token,
+        },
+        body: JSON.stringify({
+          query,
+          variables: { first: (currentPage - 1) * perPage },
+        }),
+      });
+      const prevData = await prevQuery.json();
+      const prevEdges = prevData.data.products.edges;
+      afterCursor = prevEdges.length > 0 ? prevEdges[prevEdges.length - 1].cursor : null;
     }
 
-    const countData = await countRes.json();
-    const totalProducts = countData.count;
-    const totalPages = Math.ceil(totalProducts / perPage);
-
-    // ✅ Step 2: Fetch products with pagination
-    const endpoint = `https://${shop}/admin/api/2025-01/products.json?limit=${perPage}&page=${currentPage}`;
-
-    const response = await fetch(endpoint, {
+    // Fetch current page
+    const response = await fetch(`https://${shop}/admin/api/2025-01/graphql.json`, {
+      method: "POST",
       headers: {
-        "X-Shopify-Access-Token": token,
         "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token,
       },
+      body: JSON.stringify({
+        query,
+        variables: { first: perPage, after: afterCursor },
+      }),
     });
 
-    if (!response.ok) {
-      const err = await response.text();
-      console.error("Products API Error:", response.status, err);
-      return res.status(response.status).json({ error: err });
+    const result = await response.json();
+
+    if (result.errors) {
+      console.error("GraphQL Errors:", result.errors);
+      return res.status(500).json({ error: result.errors });
     }
 
-    const data = await response.json();
+    const edges = result.data.products.edges;
 
-    // ✅ Step 3: Return clean JSON
     res.status(200).json({
-      products: data.products || [],
+      products: edges.map(({ node }) => ({
+        id: node.id,
+        title: node.title,
+        vendor: node.vendor,
+        handle: node.handle,
+        product_type: node.productType,
+        featured_image: node.featuredImage?.url || "",
+        price: parseFloat(node.priceRange.minVariantPrice.amount),
+      })),
       pagination: {
         currentPage,
-        totalPages,
-        hasNextPage: currentPage < totalPages,
-        hasPrevPage: currentPage > 1,
+        hasNextPage: result.data.products.pageInfo.hasNextPage,
+        hasPrevPage: result.data.products.pageInfo.hasPreviousPage,
       },
     });
   } catch (error) {
