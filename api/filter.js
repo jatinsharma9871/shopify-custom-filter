@@ -1,61 +1,32 @@
-// /api/filter.js
-import fetch from "node-fetch";
-
 export default async function handler(req, res) {
-  if (req.method !== "GET") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
   try {
-    // Shopify credentials (use Vercel env vars)
-    const shop = process.env.SHOPIFY_SHOP;
-    const token = process.env.SHOPIFY_ADMIN_API_TOKEN;
+    const { q = "", vendor = "", type = "", page = 1, limit = 20 } = req.query;
 
-    // Query params
-    const {
-      page = 1,
-      limit = 20,
-      vendor,
-      productType,
-      title,
-    } = req.query;
+    const shop = process.env.SHOPIFY_STORE_DOMAIN;
+    const token = process.env.SHOPIFY_ADMIN_TOKEN;
 
-    const perPage = Math.min(parseInt(limit), 50); // Shopify max = 50
-    const pageNum = Math.max(parseInt(page), 1);
+    // CORS headers
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
-    // Build filter query for Shopify Admin API
-    let filters = [];
-    if (vendor) filters.push(`vendor:${vendor}`);
-    if (productType) filters.push(`product_type:${productType}`);
-    if (title) filters.push(`title:*${title}*`);
-
-    const queryFilter = filters.length ? `(${filters.join(" AND ")})` : "";
-
-    // GraphQL query
-    const gqlQuery = `
-      query getProducts($first: Int!, $after: String, $query: String) {
-        products(first: $first, after: $after, query: $query) {
+    // GraphQL query with pagination
+    const query = `
+      query Products($query: String, $first: Int!, $after: String) {
+        products(first: $first, query: $query, after: $after) {
           edges {
             cursor
             node {
               id
-              title
-              vendor
-              productType
               handle
-              variants(first: 1) {
-                edges {
-                  node {
-                    price
-                  }
-                }
-              }
-              images(first: 1) {
-                edges {
-                  node {
-                    src: url
-                  }
-                }
+              vendor
+              title
+              productType
+              onlineStoreUrl
+              featuredImage { url altText }
+              priceRange {
+                minVariantPrice { amount currencyCode }
+                maxVariantPrice { amount currencyCode }
               }
             }
           }
@@ -67,71 +38,78 @@ export default async function handler(req, res) {
       }
     `;
 
-    // Pagination via cursors
+    // Build Shopify query string
+    let searchQuery = q ? `title:*${q}*` : "";
+    if (vendor) searchQuery += ` vendor:${vendor}`;
+    if (type) searchQuery += ` product_type:${type}`;
+
+    const perPage = Math.min(parseInt(limit), 50); // Shopify max = 50
+    const pageNum = Math.max(parseInt(page), 1);
+
     let cursor = null;
     let currentPage = 1;
     let products = [];
 
     while (currentPage <= pageNum) {
-      const response = await fetch(`https://${shop}/admin/api/2024-07/graphql.json`, {
+      const response = await fetch(`https://${shop}/admin/api/2025-01/graphql.json`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-Shopify-Access-Token": token,
         },
         body: JSON.stringify({
-          query: gqlQuery,
-          variables: { first: perPage, after: cursor, query: queryFilter || null },
+          query,
+          variables: { query: searchQuery || null, first: perPage, after: cursor },
         }),
       });
 
       const result = await response.json();
 
-      if (!result.data || !result.data.products) {
-        return res.status(200).json({
-          products: [],
-          currentPage: pageNum,
-          totalPages: 1,
-        });
+      if (result.errors) {
+        console.error(result.errors);
+        return res.status(500).json({ error: "Shopify GraphQL error", details: result.errors });
       }
 
-      const edges = result.data.products.edges || [];
+      const edges = result.data?.products?.edges || [];
       if (!edges.length) {
         return res.status(200).json({
           products: [],
-          currentPage: pageNum,
-          totalPages: 1,
+          pagination: {
+            currentPage: pageNum,
+            totalPages: 1,
+            hasNextPage: false,
+            hasPreviousPage: false,
+          },
         });
       }
 
-      // If we reached requested page, return results
       if (currentPage === pageNum) {
-        products = edges.map((e) => ({
-          id: e.node.id,
-          title: e.node.title,
-          vendor: e.node.vendor,
-          productType: e.node.productType,
-          handle: e.node.handle,
-          price: e.node.variants.edges[0]?.node?.price || null,
-          image: e.node.images.edges[0]?.node?.src || null,
+        products = edges.map(({ node }) => ({
+          id: node.id,
+          title: node.title,
+          vendor: node.vendor,
+          product_type: node.productType,
+          url: `/products/${node.handle}`,
+          featured_image: node.featuredImage?.url || "",
+          price: parseFloat(node.priceRange.minVariantPrice.amount) * 100,
         }));
-        break;
+
+        return res.status(200).json({
+          products,
+          pagination: {
+            currentPage: pageNum,
+            hasNextPage: result.data.products.pageInfo.hasNextPage,
+            hasPreviousPage: result.data.products.pageInfo.hasPreviousPage,
+          },
+        });
       }
 
-      // Prepare for next loop
-      cursor = edges[edges.length - 1]?.cursor;
-      if (!result.data.products.pageInfo.hasNextPage) break;
+      // go to next page
+      cursor = edges[edges.length - 1].cursor;
       currentPage++;
     }
-
-    // Response
-    res.status(200).json({
-      products,
-      currentPage: pageNum,
-      totalPages: currentPage < pageNum ? currentPage : pageNum + 1, // fallback
-    });
   } catch (err) {
-    console.error("Backend error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error("Search API Error:", err);
+    res.status(500).json({ error: "Server error", details: err.message });
   }
 }
