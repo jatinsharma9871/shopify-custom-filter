@@ -1,74 +1,36 @@
-// File: /api/filter.js
-
 export default async function handler(req, res) {
   try {
-    // Parse query params
     const { vendor, minPrice, maxPrice } = req.query;
 
-    // Required env vars (set in Vercel Dashboard → Settings → Environment Variables)
-    const shop = process.env.SHOPIFY_STORE_DOMAIN; // e.g. thesverve.myshopify.com
-    const token = process.env.SHOPIFY_ADMIN_TOKEN; // Admin API access token
-
-    if (!shop || !token) {
-      return res.status(500).json({ error: "Missing Shopify credentials." });
-    }
-
-    // Build GraphQL query dynamically
-    let queryFilter = [];
-    if (vendor) queryFilter.push(`vendor:${vendor}`);
-    if (minPrice) queryFilter.push(`variants.price:>=${minPrice}`);
-    if (maxPrice) queryFilter.push(`variants.price:<=${maxPrice}`);
-
-    const gqlQuery = `
+    // Shopify Admin API endpoint
+    const response = await fetch(
+      `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/2025-01/products.json?vendor=${vendor}`,
       {
-        products(first: 50, query: "${queryFilter.join(" ")}") {
-          edges {
-            node {
-              id
-              title
-              vendor
-              productType
-              handle
-              variants(first: 1) {
-                edges {
-                  node {
-                    price
-                  }
-                }
-              }
-              images(first: 1) {
-                edges {
-                  node {
-                    src
-                  }
-                }
-              }
-            }
-          }
-        }
+        headers: {
+          "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN,
+          "Content-Type": "application/json",
+        },
       }
-    `;
+    );
 
-    // Fetch from Shopify Admin GraphQL API
-    const response = await fetch(`https://${shop}/admin/api/2025-01/graphql.json`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": token,
-      },
-      body: JSON.stringify({ query: gqlQuery }),
-    });
+    if (!response.ok) {
+      throw new Error(`Shopify API error: ${response.status}`);
+    }
 
     const data = await response.json();
 
-    if (data.errors) {
-      return res.status(500).json({ error: data.errors });
+    // Optional filtering by price
+    let products = data.products;
+    if (minPrice) {
+      products = products.filter(p => p.variants.some(v => parseFloat(v.price) >= parseFloat(minPrice)));
+    }
+    if (maxPrice) {
+      products = products.filter(p => p.variants.some(v => parseFloat(v.price) <= parseFloat(maxPrice)));
     }
 
-    // Return products
-    res.status(200).json(data.data.products.edges.map(edge => edge.node));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error", details: err.message });
+    res.status(200).json({ products });
+  } catch (error) {
+    console.error("API Error:", error);
+    res.status(500).json({ error: error.message });
   }
 }
