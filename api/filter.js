@@ -6,8 +6,8 @@ export default async function handler(req, res) {
     const { vendor, minPrice, maxPrice } = req.query;
 
     // Required env vars (set in Vercel Dashboard → Settings → Environment Variables)
-    const shop = process.env.SHOPIFY_SHOP; // e.g. thesverve.myshopify.com
-    const token = process.env.SHOPIFY_ADMIN_API; // Admin API access token
+    const shop = process.env.SHOPIFY_STORE_DOMAIN; // e.g. thesverve.myshopify.com
+    const token = process.env.SHOPIFY_ADMIN_TOKEN; // Admin API access token
 
     if (!shop || !token) {
       return res.status(500).json({ error: "Missing Shopify credentials." });
