@@ -1,62 +1,79 @@
+// File: api/filter.js
+
+import fetch from "node-fetch";
+
 export default async function handler(req, res) {
-  const { cursor, limit = 20 } = req.query;
-
-  const shop = process.env.SHOPIFY_STORE_DOMAIN;   // e.g. mystore.myshopify.com
-  const accessToken = process.env.SHOPIFY_ADMIN_TOKEN;
-
-  if (!shop || !accessToken) {
-    console.error("Missing SHOPIFY env variables");
-    return res.status(500).json({ error: "Shopify credentials not configured" });
-  }
-
   try {
-    let url = `https://${shop}/admin/api/2025-01/products.json?limit=${limit}`;
+    // Get query params from frontend (e.g., vendor, price_min, price_max)
+    const { vendor, price_min, price_max } = req.query;
 
-    if (cursor) {
-      url += `&page_info=${cursor}`;
-    }
+    // Replace with your Shopify store credentials
+    const shop = process.env.SHOPIFY_STORE; // e.g. "yourstore.myshopify.com"
+    const accessToken = process.env.SHOPIFY_ADMIN_API_KEY; // Private Admin API Key
 
+    // Base URL for Admin API (GraphQL for more flexibility)
+    const url = `https://${shop}/admin/api/2025-01/graphql.json`;
+
+    // GraphQL query - fetch products with filters
+    let query = `
+      {
+        products(first: 20, query: "${vendor ? `vendor:${vendor}` : ""} ${price_min ? `variants.price:>=${price_min}` : ""} ${price_max ? `variants.price:<=${price_max}` : ""}") {
+          edges {
+            node {
+              id
+              title
+              vendor
+              productType
+              onlineStoreUrl
+              images(first: 1) {
+                edges {
+                  node {
+                    src
+                  }
+                }
+              }
+              variants(first: 1) {
+                edges {
+                  node {
+                    price
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    // Make request to Shopify
     const response = await fetch(url, {
-      headers: { 
+      method: "POST",
+      headers: {
         "X-Shopify-Access-Token": accessToken,
         "Content-Type": "application/json",
       },
+      body: JSON.stringify({ query }),
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Shopify API error:", response.status, errorText);
-      return res.status(response.status).json({ error: errorText });
-    }
 
     const data = await response.json();
 
-    // Parse pagination from response headers
-    const linkHeader = response.headers.get("link");
-    let nextCursor = null;
-    let prevCursor = null;
-
-    if (linkHeader) {
-      const links = linkHeader.split(",");
-      links.forEach((link) => {
-        const match = link.match(/<([^>]+)>;\s*rel="(\w+)"/);
-        if (match) {
-          const url = new URL(match[1]);
-          const cursorValue = url.searchParams.get("page_info");
-          if (match[2] === "next") nextCursor = cursorValue;
-          if (match[2] === "previous") prevCursor = cursorValue;
-        }
-      });
-    }
-
-    res.status(200).json({
-      products: data.products,
-      nextCursor,
-      prevCursor,
-      limit,
+    // Format results
+    const products = data.data.products.edges.map((edge) => {
+      const product = edge.node;
+      return {
+        id: product.id,
+        title: product.title,
+        vendor: product.vendor,
+        type: product.productType,
+        url: product.onlineStoreUrl,
+        image: product.images.edges[0]?.node.src || null,
+        price: product.variants.edges[0]?.node.price || null,
+      };
     });
-  } catch (error) {
-    console.error("Server error:", error);
-    res.status(500).json({ error: error.message });
+
+    res.status(200).json({ products });
+  } catch (err) {
+    console.error("Error fetching products:", err);
+    res.status(500).json({ error: "Failed to fetch products" });
   }
 }
