@@ -1,41 +1,45 @@
-// File: api/filter.js
-
-import fetch from "node-fetch";
+// File: /api/filter.js
 
 export default async function handler(req, res) {
   try {
-    // Get query params from frontend (e.g., vendor, price_min, price_max)
-    const { vendor, price_min, price_max } = req.query;
+    // Parse query params
+    const { vendor, minPrice, maxPrice } = req.query;
 
-    // Replace with your Shopify store credentials
-    const shop = process.env.SHOPIFY_STORE; // e.g. "yourstore.myshopify.com"
-    const accessToken = process.env.SHOPIFY_ADMIN_API_KEY; // Private Admin API Key
+    // Required env vars (set in Vercel Dashboard → Settings → Environment Variables)
+    const shop = process.env.SHOPIFY_SHOP; // e.g. thesverve.myshopify.com
+    const token = process.env.SHOPIFY_ADMIN_API; // Admin API access token
 
-    // Base URL for Admin API (GraphQL for more flexibility)
-    const url = `https://${shop}/admin/api/2025-01/graphql.json`;
+    if (!shop || !token) {
+      return res.status(500).json({ error: "Missing Shopify credentials." });
+    }
 
-    // GraphQL query - fetch products with filters
-    let query = `
+    // Build GraphQL query dynamically
+    let queryFilter = [];
+    if (vendor) queryFilter.push(`vendor:${vendor}`);
+    if (minPrice) queryFilter.push(`variants.price:>=${minPrice}`);
+    if (maxPrice) queryFilter.push(`variants.price:<=${maxPrice}`);
+
+    const gqlQuery = `
       {
-        products(first: 20, query: "${vendor ? `vendor:${vendor}` : ""} ${price_min ? `variants.price:>=${price_min}` : ""} ${price_max ? `variants.price:<=${price_max}` : ""}") {
+        products(first: 50, query: "${queryFilter.join(" ")}") {
           edges {
             node {
               id
               title
               vendor
               productType
-              onlineStoreUrl
-              images(first: 1) {
-                edges {
-                  node {
-                    src
-                  }
-                }
-              }
+              handle
               variants(first: 1) {
                 edges {
                   node {
                     price
+                  }
+                }
+              }
+              images(first: 1) {
+                edges {
+                  node {
+                    src
                   }
                 }
               }
@@ -45,35 +49,26 @@ export default async function handler(req, res) {
       }
     `;
 
-    // Make request to Shopify
-    const response = await fetch(url, {
+    // Fetch from Shopify Admin GraphQL API
+    const response = await fetch(`https://${shop}/admin/api/2025-01/graphql.json`, {
       method: "POST",
       headers: {
-        "X-Shopify-Access-Token": accessToken,
         "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token,
       },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query: gqlQuery }),
     });
 
     const data = await response.json();
 
-    // Format results
-    const products = data.data.products.edges.map((edge) => {
-      const product = edge.node;
-      return {
-        id: product.id,
-        title: product.title,
-        vendor: product.vendor,
-        type: product.productType,
-        url: product.onlineStoreUrl,
-        image: product.images.edges[0]?.node.src || null,
-        price: product.variants.edges[0]?.node.price || null,
-      };
-    });
+    if (data.errors) {
+      return res.status(500).json({ error: data.errors });
+    }
 
-    res.status(200).json({ products });
+    // Return products
+    res.status(200).json(data.data.products.edges.map(edge => edge.node));
   } catch (err) {
-    console.error("Error fetching products:", err);
-    res.status(500).json({ error: "Failed to fetch products" });
+    console.error(err);
+    res.status(500).json({ error: "Server error", details: err.message });
   }
 }
