@@ -7,7 +7,7 @@ export default async function handler(req, res) {
       `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/2025-01/products.json?limit=${limit}`,
       {
         headers: {
-          "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN,
+          "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
           "Content-Type": "application/json",
         },
       }
