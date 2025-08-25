@@ -10,7 +10,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { vendor, minPrice, maxPrice, limit = 5000 } = req.query;
+    const { vendor, minPrice, maxPrice, limit = 500 } = req.query;
 
     // Shopify Admin API endpoint (max 250 per page)
     const response = await fetch(
